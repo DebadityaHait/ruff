@@ -748,9 +748,8 @@ takes_int_job(wrong_job)  # error: [invalid-argument-type]
 
 ## Inferring an invariant `ParamSpec` through `Concatenate`
 
-A `Concatenate` prefix is positional-only, so a callback whose first parameter also accepts a
-keyword is not compatible with an invariant wrapper. Even though that argument is rejected, its
-remaining parameters must still be inferred precisely.
+An invariant wrapper cannot discard the keyword name of the prefix parameter to match `Concatenate`.
+We reject the wrapped callback but still infer its remaining parameters:
 
 ```py
 from typing import Callable, Concatenate, Generic, ParamSpec
@@ -765,7 +764,17 @@ def without_first(callback: Callback[Concatenate[object, P]]) -> Callable[P, Non
 
 def original(first: object, value: str) -> None: ...
 
-remaining = without_first(Callback(original))  # error: [invalid-argument-type]
+wrapped = Callback(original)
+remaining = without_first(wrapped)  # error: [invalid-argument-type]
+reveal_type(remaining)  # revealed: (value: str) -> None
+remaining(1)  # error: [invalid-argument-type]
+```
+
+When constructed inline, `Callback` can use the positional-only type from context because `original`
+accepts every call allowed by that type:
+
+```py
+remaining = without_first(Callback(original))
 reveal_type(remaining)  # revealed: (value: str) -> None
 remaining(1)  # error: [invalid-argument-type]
 ```
@@ -855,6 +864,22 @@ wrapped = Callback(original)
 reveal_type(without_first(wrapped))  # revealed: (...) -> None
 # TODO: Should reveal `(value: str) -> None`. Needs ParamSpecs in the new constraint solver.
 reveal_type(without_first(Callback(original)))  # revealed: (...) -> None
+```
+
+Wrapping the call in a generic function does not make it invalid, even though its return type is
+gradual:
+
+```py
+from typing import TypeVar
+
+T = TypeVar("T")
+
+def identity(value: T) -> T:
+    return value
+
+x = identity(without_first(Callback(original)))
+# TODO: Should reveal `(value: str) -> None`. Needs ParamSpecs in the new constraint solver.
+reveal_type(x)  # revealed: (...) -> None
 ```
 
 ## Inferring through unions of structural `ParamSpec` protocols

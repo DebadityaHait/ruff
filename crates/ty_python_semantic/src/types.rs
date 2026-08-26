@@ -1897,6 +1897,7 @@ impl<'db> Type<'db> {
             Type::Dynamic(
                 DynamicType::Unknown
                     | DynamicType::UnknownGeneric(_)
+                    | DynamicType::UnknownLambdaParameter
                     | DynamicType::AmbiguousOverload
             )
         )
@@ -2055,6 +2056,7 @@ impl<'db> Type<'db> {
             | DynamicType::InvalidConcatenateUnknown
             | DynamicType::UnknownGeneric(_)
             | DynamicType::UnspecializedTypeVar
+            | DynamicType::UnknownLambdaParameter
             | DynamicType::AmbiguousOverload => false,
             DynamicType::Todo(_) => true,
         })
@@ -2837,6 +2839,7 @@ impl<'db> Type<'db> {
                 DynamicType::Unknown
                 | DynamicType::UnknownGeneric(_)
                 | DynamicType::UnspecializedTypeVar
+                | DynamicType::UnknownLambdaParameter
                 | DynamicType::Todo(_)
                 | DynamicType::InvalidConcatenateUnknown
                 | DynamicType::AmbiguousOverload => false,
@@ -9087,6 +9090,7 @@ impl<'db> Type<'db> {
             Self::Dynamic(
                 DynamicType::Unknown
                 | DynamicType::UnknownGeneric(_)
+                | DynamicType::UnknownLambdaParameter
                 | DynamicType::AmbiguousOverload,
             ) => Type::SpecialForm(SpecialFormType::Unknown).definition(db, env),
             Self::Divergent(_) => Type::SpecialForm(SpecialFormType::Divergent).definition(db, env),
@@ -9863,6 +9867,8 @@ pub enum DynamicType<'db> {
     /// calls. For now, we replace unspecialized type variables with this marker type, and ignore them
     /// during generic inference.
     UnspecializedTypeVar,
+    /// A provisional marker for a lambda parameter before access to its declared type.
+    UnknownLambdaParameter,
     /// A special variant that represents that `Unknown` was inferred due to an invalid use of
     /// `Concatenate` in a type expression.
     ///
@@ -9892,6 +9898,13 @@ impl DynamicType<'_> {
     fn is_todo(&self) -> bool {
         matches!(self, Self::Todo(_))
     }
+
+    const fn is_provisional_marker(self) -> bool {
+        matches!(
+            self,
+            Self::UnspecializedTypeVar | Self::UnknownLambdaParameter
+        )
+    }
 }
 
 impl std::fmt::Display for DynamicType<'_> {
@@ -9900,6 +9913,7 @@ impl std::fmt::Display for DynamicType<'_> {
             DynamicType::Any => f.write_str("Any"),
             DynamicType::Unknown
             | DynamicType::UnknownGeneric(_)
+            | DynamicType::UnknownLambdaParameter
             | DynamicType::InvalidConcatenateUnknown
             | DynamicType::AmbiguousOverload => f.write_str("Unknown"),
             DynamicType::UnspecializedTypeVar => f.write_str("UnspecializedTypeVar"),

@@ -1574,6 +1574,16 @@ def _(xy: X | Y):
     xy.x = reveal_type([1])  # revealed: list[int]
 ```
 
+Unannotated lambda parameters do not prevent the inferred attribute type from providing context to
+the dictionary literals:
+
+```py
+class Callbacks:
+    def __init__(self):
+        self.values = [{"x": 0}, {"x": lambda x: 0}]
+        self.identities = [{"x": 0}, {"x": lambda x: x}]
+```
+
 ## Overload evaluation
 
 The type context of all matching overloads are considered during argument inference:
@@ -1747,7 +1757,7 @@ def from_or(values: list[str] | None) -> None:
         reveal_type(value)  # revealed: str
 
 def constructor_fallback(values: list[int] | None) -> None:
-    reveal_type(values or list())  # revealed: (list[int] & ~AlwaysFalsy) | list[Unknown]
+    reveal_type(values or list())  # revealed: list[int]
 
 def from_and(values: list[str]) -> None:
     reveal_type(values and [])  # revealed: list[str]
@@ -2017,6 +2027,63 @@ def nested_pair[T](pair: tuple[T, list[T]]) -> T:
 
 x = nested_pair(("value", [None]))
 reveal_type(x)  # revealed: str | None
+```
+
+A lambda parameter can use type context containing `Any`. Here, `list[Any]` still provides the list
+interface needed by `len`:
+
+```py
+def _(values: list[list[Any]]):
+    callable_pair((lambda value: len(reveal_type(value)), values))  # revealed: list[Any]
+```
+
+List literals also widen when a generic base class contributes gradual type context:
+
+```py
+class GenericBase[T]: ...
+class Specialized(GenericBase[str]): ...
+class Mixed(Specialized, GenericBase[Any]): ...
+
+def g[T](values: list[T], base: GenericBase[T]) -> list[T]:
+    return values
+
+reveal_type(g([1], Specialized()))  # revealed: list[int | str]
+reveal_type(g([1], Mixed()))  # revealed: list[int | str | Any]
+```
+
+Dynamic arguments remain compatible when the other arguments constrain a dictionary's key and value
+types, regardless of argument order:
+
+```py
+from ty_extensions._internal import Unknown
+
+def merge[K, V](*maps: dict[K, V]) -> tuple[K, V]:
+    raise NotImplementedError
+
+def _(dynamic: Unknown):
+    # TODO: The key and value types should also include `Unknown`.
+    reveal_type(merge({"a": 1}, {2: "b"}, dynamic))  # revealed: tuple[str | int, int | str]
+    reveal_type(merge(dynamic, {"a": 1}, {2: "b"}))  # revealed: tuple[str | int, int | str]
+
+def _(dynamic: Any):
+    # TODO: The key and value types should also include `Any`.
+    reveal_type(merge({"a": 1}, {2: "b"}, dynamic))  # revealed: tuple[str | int, int | str]
+    reveal_type(merge(dynamic, {"a": 1}, {2: "b"}))  # revealed: tuple[str | int, int | str]
+```
+
+This also applies when the `Unknown` is the result of a generic call:
+
+```py
+def unknown[T]() -> T:
+    raise NotImplementedError
+
+def _():
+    dynamic = unknown()
+    reveal_type(dynamic)  # revealed: Unknown
+
+    # TODO: The key and value types should also include `Unknown`.
+    reveal_type(merge({"a": 1}, {2: "b"}, dynamic))  # revealed: tuple[str | int, int | str]
+    reveal_type(merge(dynamic, {"a": 1}, {2: "b"}))  # revealed: tuple[str | int, int | str]
 ```
 
 ```py
@@ -2301,6 +2368,94 @@ def non_generic(value: int) -> int:
 # error: [unresolved-reference]
 diagnostic_pair(non_generic(missing_argument), [1])
 diagnostic_pair(non_generic(suppressed_argument), [1])  # ty: ignore[unresolved-reference]
+```
+
+## Dependent lambda parameters
+
+The return context can determine the types of mutually dependent identity callbacks. Unresolved
+parameter types do not contribute `Unknown` to the inferred return type:
+
+```toml
+[environment]
+python-version = "3.13"
+
+[rules]
+unsound-return-statement = "error"
+```
+
+```py
+from collections.abc import Callable
+
+def f[T, U, V](extract: Callable[[U], V], store: Callable[[V], U], key: Callable[[T], str]) -> list[V]:
+    raise NotImplementedError
+
+def _[T](key: Callable[[T], str]) -> list[T]:
+    return f(key=key, extract=lambda x: x, store=lambda x: x)
+```
+
+Gradual types from arguments still propagate through an identity lambda:
+
+```py
+from typing import Any
+from ty_extensions._internal import Unknown
+
+def apply[T, R](function: Callable[[T], R], value: T) -> R:
+    return function(value)
+
+def _(value: Any):
+    reveal_type(apply(lambda x: x, value))  # revealed: Any
+
+def _(value: Unknown):
+    reveal_type(apply(lambda x: x, value))  # revealed: Unknown
+```
+
+## Type-variable defaults as type context
+
+An explicit type-variable default can provide fallback context when arguments do not determine a
+type. Here, `Base[str]` specializes the factory to `Child[str]` without replacing the inferred
+subclass with `Base[str]`:
+
+```py
+from collections.abc import Callable
+
+class Base[T]: ...
+class Child[T](Base[T]): ...
+
+class Container[T = Base[str]]:
+    def __init__(self, factory: Callable[[], T] | None = None) -> None: ...
+
+reveal_type(Container())  # revealed: Container[Base[str]]
+
+x1 = Container(Child)
+reveal_type(x1)  # revealed: Container[Child[str]]
+reveal_type(Container(Child))  # revealed: Container[Child[str]]
+```
+
+An inferred type takes precedence over the default, including when it comes from another argument:
+
+```py
+reveal_type(Container(Child[int]))  # revealed: Container[Child[int]]
+
+def create[T = Base[str]](factory: Callable[[], T], value: T) -> T:
+    return factory()
+
+def _(value: Child[int]):
+    reveal_type(create(Child, value))  # revealed: Child[int]
+```
+
+## Return context for callback parameters
+
+`sorted` provides an `Iterable` return context for `reduce`. The callback parameter should still be
+inferred as a `set`, preserving access to `set.union`:
+
+```py
+from collections.abc import Callable
+
+def reduce[T](function: Callable[[T], object], initial: T) -> T:
+    return initial
+
+# TODO: Preserve the set accumulator's type instead of widening it to `Iterable[Unknown]`.
+sorted(reduce(lambda acc: acc.union, set()))  # error: [unresolved-attribute]
 ```
 
 ## Dunder Calls

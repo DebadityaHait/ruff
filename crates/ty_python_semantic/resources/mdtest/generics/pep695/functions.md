@@ -534,20 +534,29 @@ def contravariant_tail[**P, R](
 def original(first: object, value: str) -> int:
     return len(value)
 
-invariant_remaining = invariant_tail(InvariantCallback(original))  # error: [invalid-argument-type]
+invariant_callback = InvariantCallback(original)
+invariant_remaining = invariant_tail(invariant_callback)  # error: [invalid-argument-type]
 reveal_type(invariant_remaining)  # revealed: (value: str) -> int
 invariant_remaining(1)  # error: [invalid-argument-type]
 invariant_remaining("valid").missing_attribute  # error: [unresolved-attribute]
 
-contravariant_remaining = contravariant_tail(ContravariantCallback(original))  # error: [invalid-argument-type]
+contravariant_callback = ContravariantCallback(original)
+contravariant_remaining = contravariant_tail(contravariant_callback)  # error: [invalid-argument-type]
 reveal_type(contravariant_remaining)  # revealed: (value: str) -> int
 contravariant_remaining(1)  # error: [invalid-argument-type]
 contravariant_remaining("valid").missing_attribute  # error: [unresolved-attribute]
 ```
 
-A higher-order callback must retain its inferred parameter list under both outer variances, even
-when assigning the result causes the outer argument to be rejected. Its callback parameter can
-accept either the declared prefix or a narrower derived prefix.
+Constructing the wrappers inline lets their type parameters use the positional-only callable type
+from context:
+
+```py
+reveal_type(invariant_tail(InvariantCallback(original)))  # revealed: (value: str) -> int
+reveal_type(contravariant_tail(ContravariantCallback(original)))  # revealed: (value: str) -> int
+```
+
+This also applies when the wrapped function takes a callback, including callbacks with a narrower
+prefix:
 
 ```py
 def accepts_exact(callback: Callable[[Base, str], None]) -> None: ...
@@ -562,18 +571,18 @@ def contravariant_higher_order[**P](
 ) -> Callable[P, None]:
     raise NotImplementedError
 
-invariant_exact = invariant_higher_order(InvariantCallback(accepts_exact))  # error: [invalid-argument-type]
+invariant_exact = invariant_higher_order(InvariantCallback(accepts_exact))
 reveal_type(invariant_exact)  # revealed: (str, /) -> None
 invariant_exact(1)  # error: [invalid-argument-type]
 
-invariant_narrower = invariant_higher_order(InvariantCallback(accepts_narrower))  # error: [invalid-argument-type]
+invariant_narrower = invariant_higher_order(InvariantCallback(accepts_narrower))
 reveal_type(invariant_narrower)  # revealed: (str, /) -> None
 
-contravariant_exact = contravariant_higher_order(ContravariantCallback(accepts_exact))  # error: [invalid-argument-type]
+contravariant_exact = contravariant_higher_order(ContravariantCallback(accepts_exact))
 reveal_type(contravariant_exact)  # revealed: (str, /) -> None
 contravariant_exact(1)  # error: [invalid-argument-type]
 
-contravariant_narrower = contravariant_higher_order(ContravariantCallback(accepts_narrower))  # error: [invalid-argument-type]
+contravariant_narrower = contravariant_higher_order(ContravariantCallback(accepts_narrower))
 reveal_type(contravariant_narrower)  # revealed: (str, /) -> None
 ```
 
@@ -632,13 +641,22 @@ def contravariant_tail[**P](container: ContravariantCallback[VariadicCallback[P]
 
 def original(first: object, value: str) -> None: ...
 
-invariant_remaining = invariant_tail(InvariantCallback(original))  # error: [invalid-argument-type]
+invariant_callback = InvariantCallback(original)
+invariant_remaining = invariant_tail(invariant_callback)  # error: [invalid-argument-type]
 reveal_type(invariant_remaining)  # revealed: (value: str) -> None
 invariant_remaining(1)  # error: [invalid-argument-type]
 
-contravariant_remaining = contravariant_tail(ContravariantCallback(original))  # error: [invalid-argument-type]
+contravariant_callback = ContravariantCallback(original)
+contravariant_remaining = contravariant_tail(contravariant_callback)  # error: [invalid-argument-type]
 reveal_type(contravariant_remaining)  # revealed: (value: str) -> None
 contravariant_remaining(1)  # error: [invalid-argument-type]
+```
+
+The same contextual specialization works for callable protocols:
+
+```py
+reveal_type(invariant_tail(InvariantCallback(original)))  # revealed: (value: str) -> None
+reveal_type(contravariant_tail(ContravariantCallback(original)))  # revealed: (value: str) -> None
 ```
 
 A nominal callable object's `__call__` method must likewise preserve the callback protocol's
@@ -648,13 +666,23 @@ inferred parameters under both wrapper variances.
 class CallableObject:
     def __call__(self, first: object, value: str) -> None: ...
 
-invariant_object = invariant_tail(InvariantCallback(CallableObject()))  # error: [invalid-argument-type]
+invariant_callback = InvariantCallback(CallableObject())
+invariant_object = invariant_tail(invariant_callback)  # error: [invalid-argument-type]
 reveal_type(invariant_object)  # revealed: (value: str) -> None
 invariant_object(1)  # error: [invalid-argument-type]
 
-contravariant_object = contravariant_tail(ContravariantCallback(CallableObject()))  # error: [invalid-argument-type]
+contravariant_callback = ContravariantCallback(CallableObject())
+contravariant_object = contravariant_tail(contravariant_callback)  # error: [invalid-argument-type]
 reveal_type(contravariant_object)  # revealed: (value: str) -> None
 contravariant_object(1)  # error: [invalid-argument-type]
+```
+
+As with functions, constructing the wrappers inline lets them use the `VariadicCallback` type from
+context:
+
+```py
+reveal_type(invariant_tail(InvariantCallback(CallableObject())))  # revealed: (value: str) -> None
+reveal_type(contravariant_tail(ContravariantCallback(CallableObject())))  # revealed: (value: str) -> None
 ```
 
 ## Bound violations inferred through protocols
@@ -1620,6 +1648,15 @@ def _(any_value: Any, unknown_value: Unknown, upper: Callable[[list[int]], None]
     reveal_type(any_result[0])  # revealed: int & Any
     reveal_type(unknown_result)  # revealed: list[int] & Unknown
     reveal_type(unknown_result[0])  # revealed: int & Unknown
+```
+
+The same restriction applies when `Unknown` is inferred from a lambda call:
+
+```py
+identity = lambda value: value
+
+def _(value: Unknown, upper: Callable[[int], None]):
+    reveal_type(infer(identity(value), upper))  # revealed: int & Unknown
 ```
 
 ## Redundant upper bounds preserve large gradual unions
