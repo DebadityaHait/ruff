@@ -2245,6 +2245,12 @@ pub enum ApplySpecialization<'a, 'db> {
     /// Maps a single typevar to a concrete type. Used by the constraint set's sequent map to
     /// substitute a typevar nested inside another constraint's bound.
     Single(BoundTypeVarInstance<'db>, Type<'db>),
+    /// Overrides a type variable without changing the other bindings or specialization mode.
+    WithBinding {
+        specialization: &'a ApplySpecialization<'a, 'db>,
+        typevar: BoundTypeVarInstance<'db>,
+        ty: Type<'db>,
+    },
 }
 
 impl<'db> ApplySpecialization<'_, 'db> {
@@ -2261,6 +2267,16 @@ impl<'db> ApplySpecialization<'_, 'db> {
                 specialize_self_domain,
                 ..
             } => specialize_self_domain,
+            Self::WithBinding { specialization, .. } => specialization.specialize_self_domain(),
+            _ => false,
+        }
+    }
+
+    /// Whether this mapping leaves unevaluated function signatures unchanged.
+    pub(super) fn preserves_lazy_signatures(self) -> bool {
+        match self {
+            Self::ReturnCallables(_) | Self::TypeAlias(_) => true,
+            Self::WithBinding { specialization, .. } => specialization.preserves_lazy_signatures(),
             _ => false,
         }
     }
@@ -2300,6 +2316,17 @@ impl<'db> ApplySpecialization<'_, 'db> {
                     None
                 }
             }
+            ApplySpecialization::WithBinding {
+                specialization,
+                typevar,
+                ty,
+            } => {
+                if bound_typevar.is_same_typevar_as(db, *typevar) {
+                    Some(*ty)
+                } else {
+                    specialization.get(db, bound_typevar)
+                }
+            }
         }
     }
 
@@ -2333,6 +2360,27 @@ impl<'db> ApplySpecialization<'_, 'db> {
                 ),
             ),
             ApplySpecialization::ReturnCallables(_) | ApplySpecialization::Single(_, _) => None,
+            ApplySpecialization::WithBinding {
+                specialization,
+                typevar,
+                ty,
+            } => {
+                let specialization = specialization.as_specialization(db)?;
+                let types = specialization.map_types(db, |_, variable, original| {
+                    if variable.is_same_typevar_as(db, typevar) {
+                        ty
+                    } else {
+                        original
+                    }
+                });
+                Some(Specialization::new(
+                    db,
+                    specialization.generic_context(db),
+                    types,
+                    specialization.materialization_kind(db),
+                    specialization.tuple_inner(db),
+                ))
+            }
         }
     }
 }

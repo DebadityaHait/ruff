@@ -8093,6 +8093,65 @@ impl<'db> Type<'db> {
             return SubclassOfType::from(db, visitor.env, class.default_specialization(db));
         }
 
+        if let TypeMapping::ApplySpecialization(specialization)
+        | TypeMapping::ApplySpecializationWithMaterialization { specialization, .. } =
+            type_mapping
+        {
+            let function_signatures = |function: FunctionType<'db>| {
+                if specialization.preserves_lazy_signatures() {
+                    function.updated_signature(db)
+                } else {
+                    Some(function.signature(db))
+                }
+            };
+
+            let signatures = match self {
+                Type::FunctionLiteral(function) => function_signatures(function),
+                Type::BoundMethod(method) => function_signatures(method.function(db)),
+                Type::Callable(callable) => Some(callable.signatures(db)),
+                _ => None,
+            };
+            let paramspec_union = signatures.and_then(|signatures| {
+                signatures.iter().find_map(|signature| {
+                    let (_, typevar) = signature.parameters().as_paramspec_with_prefix()?;
+                    let Type::Union(union) = specialization.get(db, typevar)? else {
+                        return None;
+                    };
+                    Some((typevar, union))
+                })
+            });
+
+            if let Some((typevar, union)) = paramspec_union {
+                // A union-valued ParamSpec produces a union of callables, not an overload.
+                // Substitute each alternative throughout the callable so both occurrences of P
+                // in Callable[P, Callable[P, R]] receive the same parameter list.
+                let specialize = |&ty: &Type<'db>| {
+                    let specialization = ApplySpecialization::WithBinding {
+                        specialization,
+                        typevar,
+                        ty,
+                    };
+                    let mapping = match type_mapping {
+                        TypeMapping::ApplySpecializationWithMaterialization {
+                            materialization_kind,
+                            ..
+                        } => TypeMapping::ApplySpecializationWithMaterialization {
+                            specialization,
+                            materialization_kind: *materialization_kind,
+                        },
+                        _ => TypeMapping::ApplySpecialization(specialization),
+                    };
+
+                    // The visitor's cache does not distinguish between these bindings.
+                    self.apply_type_mapping(db, visitor.env, &mapping, tcx)
+                };
+
+                return visitor.visit(db, self, type_mapping, || {
+                    union.map(db, visitor.env, specialize)
+                });
+            }
+        }
+
         match self {
             Type::TypeVar(bound_typevar) => {
                 bound_typevar.apply_type_mapping_impl(db, type_mapping, visitor)
@@ -8323,15 +8382,9 @@ impl<'db> Type<'db> {
                     TypeMapping::ApplySpecialization(specialization)
                     | TypeMapping::ApplySpecializationWithMaterialization {
                         specialization, ..
-                    } if matches!(
-                        specialization,
-                        ApplySpecialization::Specialization { .. }
-                            | ApplySpecialization::TypeAlias(_)
-                            | ApplySpecialization::Partial { .. }
-                    ) =>
+                    } if let Some(mut current_specialization) =
+                        specialization.as_specialization(db) =>
                     {
-                        let mut current_specialization =
-                            specialization.as_specialization(db).unwrap();
                         if let TypeMapping::ApplySpecializationWithMaterialization {
                             materialization_kind,
                             ..

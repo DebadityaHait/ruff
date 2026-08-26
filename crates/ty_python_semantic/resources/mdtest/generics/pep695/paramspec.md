@@ -987,6 +987,72 @@ def with_final[**P](foo: FooWithFinal[P]) -> None:
     reveal_type(foo.kwargs)  # revealed: P@with_final.kwargs
 ```
 
+### `ParamSpec` inference from unions
+
+A `ParamSpec` inferred from a union of protocols can have more than one parameter list. Calling a
+specialized method requires arguments accepted by every member of that union:
+
+```py
+from typing import Protocol
+
+class Callback[**P](Protocol):
+    def call(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+def preserve[**P](callback: Callback[P]) -> Callback[P]:
+    return callback
+
+def _(callback: Callback[[object, int]] | Callback[[str, object]]) -> None:
+    x = preserve(callback)
+    x.call("value", 1)
+    x.call(1, 1)  # error: [invalid-argument-type]
+    x.call("value", "value")  # error: [invalid-argument-type]
+```
+
+This also applies when returning a `Callable`. We infer a union of callables, not an overloaded
+callable:
+
+```py
+from typing import Callable
+
+def as_callable[**P](callback: Callback[P]) -> Callable[P, None]:
+    return callback.call
+
+def _(callback: Callback[[object, int]] | Callback[[str, object]]) -> None:
+    x = as_callable(callback)
+    reveal_type(x)  # revealed: ((object, int, /) -> None) | ((str, object, /) -> None)
+    x("value", 1)
+    x(1, 1)  # error: [invalid-argument-type]
+    x("value", "value")  # error: [invalid-argument-type]
+```
+
+### Repeated occurrences of an inferred `ParamSpec`
+
+When `P` is inferred as a union, we use the same alternative in a callable's parameters and return
+type. A type alias in the return type preserves this relationship, along with the specializations of
+other type variables:
+
+```py
+from typing import Callable, Protocol
+
+class Callback[**P](Protocol):
+    def call(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+type Inner[**P, R] = Callable[P, R]
+
+def nested[**P, R](callback: Callback[P], value: R) -> Callable[P, Inner[P, R]]:
+    raise NotImplementedError
+
+def _(callback: Callback[[object, int]] | Callback[[str, object]], value: int) -> None:
+    outer = nested(callback, value)
+    # revealed: ((object, int, /) -> Inner[(object, int, /), int]) | ((str, object, /) -> Inner[(str, object, /), int])
+    reveal_type(outer)
+    inner = outer("value", 1)
+    reveal_type(inner)  # revealed: ((object, int, /) -> int) | ((str, object, /) -> int)
+    inner("value", 1)
+    inner(1, 1)  # error: [invalid-argument-type]
+    inner("value", "value")  # error: [invalid-argument-type]
+```
+
 ### Specializing `Self` when `ParamSpec` is involved
 
 ```py
