@@ -449,13 +449,10 @@ error[invalid-assignment]: Object of type `() -> None` is not assignable to `(in
 info: the first parameter is missing
 ```
 
-## Missing parameters in nested generic calls involving `TypeVarTuple`s and `ParamSpec`s
+## Nested generic calls involving `TypeVarTuple`s and `ParamSpec`s
 
-In the following example, the signature of the `callback` function does not satisfy the `fn`
-parameter of `wrapper` in the `accept()` call, because the arguments provided to `accept()`
-following `fn` indicate that it must accept the value `1` as a positional argument, and it does not.
-
-We don't currently add error context in this code path, but we could add it in the future:
+The wrapper preserves the callback's parameter list. A callback that accepts no arguments cannot
+receive a forwarded positional argument, so we report the extra argument on the outer call:
 
 ```py
 from collections.abc import Callable
@@ -466,24 +463,23 @@ def wrapper1[**P](fn: Callable[P, None]) -> Callable[P, None]:
 def accept1[**P](fn: Callable[P, None], *args: P.args, **kwargs: P.kwargs) -> None: ...
 def callback1() -> None: ...
 
-accept1(wrapper1(callback1), 1)  # snapshot: invalid-argument-type
+accept1(wrapper1(callback1), 1)  # snapshot: too-many-positional-arguments
 ```
 
 ```snapshot
-error[invalid-argument-type]: Argument to function `wrapper1` is incorrect
- --> src/mdtest_snippet.py:9:18
+error[too-many-positional-arguments]: Too many positional arguments to function `accept1`: expected 0, got 1
+ --> src/mdtest_snippet.py:9:30
   |
-9 | accept1(wrapper1(callback1), 1)  # snapshot: invalid-argument-type
-  |                  ^^^^^^^^^ Expected `(**P@accept1) -> None`, found `def callback1() -> None`
-info: Function defined here
- --> src/mdtest_snippet.py:3:5
+9 | accept1(wrapper1(callback1), 1)  # snapshot: too-many-positional-arguments
+  |                              ^
+info: Function signature here
+ --> src/mdtest_snippet.py:6:5
   |
-3 | def wrapper1[**P](fn: Callable[P, None]) -> Callable[P, None]:
-  |     ^^^^^^^^      --------------------- Parameter declared here
+6 | def accept1[**P](fn: Callable[P, None], *args: P.args, **kwargs: P.kwargs) -> None: ...
+  |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-The following case is similar, but exercises a different code path. Here, we could also add error
-context to improve the diagnostic in the future:
+A callback accepting only keyword arguments likewise rejects a forwarded positional argument:
 
 ```py
 def wrapper2[**P](fn: Callable[P, None]) -> Callable[P, None]:
@@ -492,24 +488,24 @@ def wrapper2[**P](fn: Callable[P, None]) -> Callable[P, None]:
 def accept2[**P](fn: Callable[P, None], *args: P.args, **kwargs: P.kwargs) -> None: ...
 def callback2(**kwargs: int) -> None: ...
 
-accept2(wrapper2(callback2), 1)  # snapshot: invalid-argument-type
+accept2(wrapper2(callback2), 1)  # snapshot: too-many-positional-arguments
 ```
 
 ```snapshot
-error[invalid-argument-type]: Argument to function `wrapper2` is incorrect
-  --> src/mdtest_snippet.py:16:18
+error[too-many-positional-arguments]: Too many positional arguments to function `accept2`: expected 0, got 1
+  --> src/mdtest_snippet.py:16:30
    |
-16 | accept2(wrapper2(callback2), 1)  # snapshot: invalid-argument-type
-   |                  ^^^^^^^^^ Expected `(**P@accept2) -> None`, found `def callback2(**kwargs: int) -> None`
-info: Function defined here
-  --> src/mdtest_snippet.py:10:5
+16 | accept2(wrapper2(callback2), 1)  # snapshot: too-many-positional-arguments
+   |                              ^
+info: Function signature here
+  --> src/mdtest_snippet.py:13:5
    |
-10 | def wrapper2[**P](fn: Callable[P, None]) -> Callable[P, None]:
-   |     ^^^^^^^^      --------------------- Parameter declared here
+13 | def accept2[**P](fn: Callable[P, None], *args: P.args, **kwargs: P.kwargs) -> None: ...
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 ```
 
-And the same applies to the following two examples too, which both use a `TypeVarTuple` instead of a
-`ParamSpec`:
+The following examples use a `TypeVarTuple` instead of a `ParamSpec`. We report the incompatible
+callback in these cases, but do not currently add error context to explain the missing parameters:
 
 ```py
 def wrapper3[*Ts](fn: Callable[[*Ts], None]) -> Callable[[*Ts], None]:

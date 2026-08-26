@@ -3299,7 +3299,9 @@ impl<'db, 'c> SpecializationBuilder<'db, 'c> {
         let LegacyTypeMappings::Available(types) = &mut self.types else {
             return false;
         };
-        types.get_mut(&bound_typevar).is_some_and(|inferred_ty| {
+
+        // An unsolved variable does not rule out a preferred type.
+        types.get_mut(&bound_typevar).is_none_or(|inferred_ty| {
             inferred_ty
                 .get_or_build(db, self.env)
                 .is_assignable_to(db, self.env, ty)
