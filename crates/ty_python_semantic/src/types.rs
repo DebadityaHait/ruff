@@ -1,7 +1,7 @@
 use compact_str::{CompactString, ToCompactString};
 use itertools::Itertools;
 use ruff_diagnostics::{Edit, Fix};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -8134,6 +8134,81 @@ impl<'db> Type<'db> {
             return SubclassOfType::from(db, visitor.env, class.default_specialization(db));
         }
 
+        // Expand union-valued `ParamSpec`s before specializing a given signature.
+        if let TypeMapping::ApplySpecialization(specialization)
+        | TypeMapping::ApplySpecializationWithMaterialization { specialization, .. } =
+            type_mapping
+        {
+            let function_signatures = |function: FunctionType<'db>| {
+                if specialization.preserves_lazy_signatures() {
+                    function.updated_signature(db)
+                } else {
+                    Some(function.signature(db))
+                }
+            };
+
+            let signatures = match self {
+                Type::FunctionLiteral(function) => function_signatures(function),
+                Type::BoundMethod(method) => function_signatures(method.function(db)),
+                Type::Callable(callable) => Some(callable.signatures(db)),
+                _ => None,
+            };
+
+            let mut seen_paramspecs = FxHashSet::default();
+            let mut paramspec_unions = signatures
+                .into_iter()
+                .flat_map(|signatures| signatures.iter())
+                .filter_map(|signature| {
+                    let (_, typevar) = signature.parameters().as_paramspec_with_prefix()?;
+                    let Type::Union(union) = specialization.get(db, typevar)? else {
+                        return None;
+                    };
+                    Some((typevar, union))
+                })
+                .filter(|(typevar, _)| seen_paramspecs.insert(typevar.identity(db)));
+
+            if let Some((typevar, paramspec_union)) = paramspec_unions.next() {
+                // Specializing an overloaded method with a union-valued `ParamSpec` leads
+                // to exponential blowup, so we bound the expansion before specialization.
+                const MAX_PARAMSPEC_EXPANSION: usize = 64;
+
+                let mut expansion_size = 1usize;
+                for (_, union) in iter::once((typevar, paramspec_union)).chain(paramspec_unions) {
+                    expansion_size = expansion_size.saturating_mul(union.elements(db).len());
+                    if expansion_size > MAX_PARAMSPEC_EXPANSION {
+                        return Type::unknown();
+                    }
+                }
+
+                // Override the specialization with a specific `ParamSpec` parameter-list in the union.
+                let specialize = |&ty: &Type<'db>| {
+                    let specialization = ApplySpecialization::WithBinding {
+                        specialization,
+                        typevar,
+                        ty,
+                    };
+
+                    let mapping = match type_mapping {
+                        TypeMapping::ApplySpecializationWithMaterialization {
+                            materialization_kind,
+                            ..
+                        } => TypeMapping::ApplySpecializationWithMaterialization {
+                            specialization,
+                            materialization_kind: *materialization_kind,
+                        },
+                        _ => TypeMapping::ApplySpecialization(specialization),
+                    };
+
+                    self.apply_type_mapping(db, visitor.env, &mapping, tcx)
+                };
+
+                // A union-valued `ParamSpec` produces a union of callables.
+                return visitor.visit(db, self, type_mapping, || {
+                    paramspec_union.map(db, visitor.env, specialize)
+                });
+            }
+        }
+
         match self {
             Type::TypeVar(bound_typevar) => {
                 bound_typevar.apply_type_mapping_impl(db, type_mapping, visitor)
@@ -8364,15 +8439,9 @@ impl<'db> Type<'db> {
                     TypeMapping::ApplySpecialization(specialization)
                     | TypeMapping::ApplySpecializationWithMaterialization {
                         specialization, ..
-                    } if matches!(
-                        specialization,
-                        ApplySpecialization::Specialization { .. }
-                            | ApplySpecialization::TypeAlias(_)
-                            | ApplySpecialization::Partial { .. }
-                    ) =>
+                    } if let Some(mut current_specialization) =
+                        specialization.as_specialization(db) =>
                     {
-                        let mut current_specialization =
-                            specialization.as_specialization(db).unwrap();
                         if let TypeMapping::ApplySpecializationWithMaterialization {
                             materialization_kind,
                             ..
