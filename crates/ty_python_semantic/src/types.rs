@@ -1,7 +1,7 @@
 use compact_str::{CompactString, ToCompactString};
 use itertools::Itertools;
 use ruff_diagnostics::{Edit, Fix};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use std::borrow::Cow;
 use std::cell::OnceCell;
@@ -8111,17 +8111,31 @@ impl<'db> Type<'db> {
                 Type::Callable(callable) => Some(callable.signatures(db)),
                 _ => None,
             };
-            let paramspec_union = signatures.and_then(|signatures| {
-                signatures.iter().find_map(|signature| {
+            let mut seen_paramspecs = FxHashSet::default();
+            let mut paramspec_unions = signatures
+                .into_iter()
+                .flat_map(|signatures| signatures.iter())
+                .filter_map(|signature| {
                     let (_, typevar) = signature.parameters().as_paramspec_with_prefix()?;
                     let Type::Union(union) = specialization.get(db, typevar)? else {
                         return None;
                     };
                     Some((typevar, union))
                 })
-            });
+                .filter(|(typevar, _)| seen_paramspecs.insert(typevar.identity(db)));
 
-            if let Some((typevar, union)) = paramspec_union {
+            if let Some((typevar, union)) = paramspec_unions.next() {
+                // Independent ParamSpecs across overloads produce a Cartesian product of their
+                // unions. Bound the product before specializing any of the alternatives.
+                const MAX_PARAMSPEC_EXPANSION: usize = 64;
+                let mut expansion_size = 1usize;
+                for (_, union) in iter::once((typevar, union)).chain(paramspec_unions) {
+                    expansion_size = expansion_size.saturating_mul(union.elements(db).len());
+                    if expansion_size > MAX_PARAMSPEC_EXPANSION {
+                        return Type::unknown();
+                    }
+                }
+
                 // A union-valued ParamSpec produces a union of callables, not an overload.
                 // Substitute each alternative throughout the callable so both occurrences of P
                 // in Callable[P, Callable[P, R]] receive the same parameter list.

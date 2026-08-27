@@ -1053,6 +1053,55 @@ def _(callback: Callback[[object, int]] | Callback[[str, object]], value: int) -
     inner("value", "value")  # error: [invalid-argument-type]
 ```
 
+### Limiting union-valued `ParamSpec` expansion
+
+Specializing an overloaded method with several union-valued `ParamSpec`s takes the Cartesian product
+of their alternatives. We limit this expansion to 64 callables, and infer `Unknown` beyond that
+limit.
+
+```py
+from typing import Literal, Protocol, overload
+
+class Callback[**P](Protocol):
+    def call(self, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+class Combined[**P, **Q, **R](Protocol):
+    @overload
+    def call(self) -> int: ...
+    @overload
+    def call(self, tag: Literal[0], /, *args: P.args, **kwargs: P.kwargs) -> None: ...
+    @overload
+    def call(self, tag: Literal[1], /, *args: Q.args, **kwargs: Q.kwargs) -> None: ...
+    @overload
+    def call(self, tag: Literal[2], /, *args: R.args, **kwargs: R.kwargs) -> None: ...
+    @overload
+    def call(self, tag: Literal[3], /, *args: P.args, **kwargs: P.kwargs) -> None: ...
+
+def combine[**P, **Q, **R](p: Callback[P], q: Callback[Q], r: Callback[R]) -> Combined[P, Q, R]:
+    raise NotImplementedError
+```
+
+Four choices for each of `P`, `Q`, and `R` produce 64 combinations. The two overloads using `P`
+share the same choice:
+
+```py
+type FourCallbacks = Callback[[int]] | Callback[[str]] | Callback[[bytes]] | Callback[[None]]
+
+def _(x: FourCallbacks) -> None:
+    f = combine(x, x, x).call
+    reveal_type(f())  # revealed: int
+```
+
+Giving `R` a fifth alternative increases the product to 80, so the method type becomes `Unknown`:
+
+```py
+def _(x: FourCallbacks, y: FourCallbacks | Callback[[list[int]]]) -> None:
+    f = combine(x, x, y).call
+    reveal_type(f)  # revealed: Unknown
+    f()
+    f(0, 1)
+```
+
 ### Specializing `Self` when `ParamSpec` is involved
 
 ```py
