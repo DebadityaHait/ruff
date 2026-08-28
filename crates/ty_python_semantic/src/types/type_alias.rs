@@ -5,8 +5,8 @@ use crate::{
     Db, FxOrderSet,
     types::{
         ApplyTypeMappingVisitor, BindingContext, BoundTypeVarIdentity, GenericContext, KnownClass,
-        KnownInstanceType, MaterializationKind, Type, TypeContext, TypeMapping, TypeVarVariance,
-        TypingModule, VarianceInferenceMode, definition_expression_type,
+        KnownInstanceType, MaterializationKind, Type, TypeContext, TypeMapping, TypingModule,
+        VarianceInferenceMode, VarianceResult, definition_expression_type,
         display::qualified_name_components_from_scope,
         generics::{ApplySpecialization, Specialization, bind_typevar},
         variance::VarianceInferable,
@@ -503,8 +503,8 @@ impl<'db> VarianceInferable<'db> for TypeAliasType<'db> {
         db: &'db dyn Db,
         _: &ProgramEnvironment<'db>,
         typevar: BoundTypeVarIdentity<'db>,
-        mode: VarianceInferenceMode,
-    ) -> TypeVarVariance {
+        mode: VarianceInferenceMode<'db>,
+    ) -> VarianceResult {
         self.variance_of_owner(db, typevar, mode)
     }
 }
@@ -513,15 +513,15 @@ impl<'db> VarianceInferable<'db> for TypeAliasType<'db> {
 impl<'db> TypeAliasType<'db> {
     #[salsa::tracked(
         returns(copy),
-        cycle_initial=|_, _, _, _, _| TypeVarVariance::Bivariant,
+        cycle_initial=|_, _, _, _, _| VarianceResult::BIVARIANT,
         heap_size=ruff_memory_usage::heap_size
     )]
     fn variance_of_owner(
         self,
         db: &'db dyn Db,
         typevar: BoundTypeVarIdentity<'db>,
-        mode: VarianceInferenceMode,
-    ) -> TypeVarVariance {
+        mode: VarianceInferenceMode<'db>,
+    ) -> VarianceResult {
         let env = ProgramEnvironment::from_definition(self.definition(db));
         let Some(generic_context) = self.generic_context(db) else {
             return self
@@ -547,15 +547,15 @@ impl<'db> TypeAliasType<'db> {
 
         // For external typevars, variance flows through the specialization arguments. Expanding
         // the specialized alias body here can create ever-larger recursive alias applications.
-        generic_context
+        let variances = generic_context
             .variables(db)
             .zip(specialization.types(db))
             .map(|(alias_typevar, argument_ty)| {
                 raw_value_type
                     .variance_of_in_mode(db, &env, alias_typevar.identity(db), mode)
                     .compose_thunk(|| argument_ty.variance_of_in_mode(db, &env, typevar, mode))
-            })
-            .collect()
+            });
+        mode.join(variances)
     }
 }
 
