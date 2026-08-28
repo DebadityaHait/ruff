@@ -10,7 +10,7 @@ use crate::types::constraints::{
     ConstraintSetBuilder, ConstraintSetStorage, IntersectionResult, Node,
 };
 use crate::types::typevar::TypeVarSet;
-use crate::types::variance::{VarianceInferable, VarianceInferenceMode};
+use crate::types::variance::VarianceInferable;
 use crate::types::visitor::{
     TypeCollector, TypeVisitor, any_over_type, walk_type_with_recursion_guard,
 };
@@ -704,20 +704,15 @@ impl SequentMap {
                 //
                 // Fast-path bare typevar replacements (`Type::TypeVar`) using equality checks
                 // instead of calling `variance_of` on them. This avoids a large number of tiny
-                // tracked `variance_of` queries in hot paths.
+                // cached variance queries in hot paths.
                 let replacement_mentions_bound_or_constrained = |replacement: Type<'db>| {
                     replacement
-                        .variance_of(db, env, bound_identity, VarianceInferenceMode::Effective)
-                        .variance
+                        .variance_of(db, env, bound_identity)
+                        .evaluate(db)
                         != TypeVarVariance::Bivariant
                         || replacement
-                            .variance_of(
-                                db,
-                                env,
-                                constrained_identity,
-                                VarianceInferenceMode::Effective,
-                            )
-                            .variance
+                            .variance_of(db, env, constrained_identity)
+                            .evaluate(db)
                             != TypeVarVariance::Bivariant
                 };
 
@@ -732,8 +727,8 @@ impl SequentMap {
                 // (e.g., `Option<TypeVarVariance>`).
                 let upper_replacement = match (
                     constrained_upper
-                        .variance_of(db, env, bound_identity, VarianceInferenceMode::Effective)
-                        .variance,
+                        .variance_of(db, env, bound_identity)
+                        .evaluate(db),
                     bound_lower_bound.ty(),
                     bound_upper_bound.ty(),
                 ) {
@@ -807,8 +802,8 @@ impl SequentMap {
                 // Check the lower bound of the constrained constraint for nested occurrences.
                 let lower_replacement = match (
                     constrained_lower
-                        .variance_of(db, env, bound_identity, VarianceInferenceMode::Effective)
-                        .variance,
+                        .variance_of(db, env, bound_identity)
+                        .evaluate(db),
                     bound_lower_bound.ty(),
                     bound_upper_bound.ty(),
                 ) {
@@ -944,13 +939,8 @@ impl SequentMap {
                         && !constrained_upper.is_object()
                         && !constrained_upper.is_dynamic()
                         && match constrained_upper
-                            .variance_of(
-                                db,
-                                env,
-                                nested_typevar.identity(db),
-                                VarianceInferenceMode::Effective,
-                            )
-                            .variance
+                            .variance_of(db, env, nested_typevar.identity(db))
+                            .evaluate(db)
                         {
                             TypeVarVariance::Bivariant => false,
                             TypeVarVariance::Covariant => !is_upper_bound,
@@ -997,13 +987,8 @@ impl SequentMap {
                         && !constrained_lower.is_object()
                         && !constrained_lower.is_dynamic()
                         && match constrained_lower
-                            .variance_of(
-                                db,
-                                env,
-                                nested_typevar.identity(db),
-                                VarianceInferenceMode::Effective,
-                            )
-                            .variance
+                            .variance_of(db, env, nested_typevar.identity(db))
+                            .evaluate(db)
                         {
                             TypeVarVariance::Bivariant => false,
                             TypeVarVariance::Covariant => is_upper_bound,

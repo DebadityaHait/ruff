@@ -21,7 +21,7 @@ use crate::{
         TypeVarVariance, UnionBuilder, UnionType, any_over_type, binding_type,
         definition_expression_type,
         tuple::Tuple,
-        variance::{VarianceInferable, VarianceInferenceMode},
+        variance::VarianceInferable,
         visitor::{self, TypeCollector, TypeVisitor, walk_type_with_recursion_guard},
     },
 };
@@ -1261,13 +1261,8 @@ impl<'db> BoundTypeVarInstance<'db> {
                 BindingContext::Definition(definition) => polarity.compose_thunk(|| {
                     let env = ProgramEnvironment::from_definition(definition);
                     match binding_type(db, definition)
-                        .variance_of(
-                            db,
-                            &env,
-                            self.identity(db),
-                            VarianceInferenceMode::Effective,
-                        )
-                        .variance
+                        .variance_of(db, &env, self.identity(db))
+                        .evaluate(db)
                     {
                         // When both directions are valid, the typing spec selects covariance.
                         TypeVarVariance::Bivariant => TypeVarVariance::Covariant,
